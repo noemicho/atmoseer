@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 
 # ==========================================================
@@ -278,7 +278,11 @@ def aggregate_block_by_time_window(
         minute_bucket = (ts.minute // aggregate_minutes) * aggregate_minutes
         bucket_ts = ts.replace(minute=minute_bucket, second=0, microsecond=0)
 
-        frame = load_radar_image_rgb(path, width=width, height=height)
+        try:
+            frame = load_radar_image_rgb(path, width=width, height=height)
+        except (UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"[WARN] Ignorando imagem inválida: {path} | erro: {e}")
+            continue
 
         if bucket_ts not in grouped:
             grouped[bucket_ts] = []
