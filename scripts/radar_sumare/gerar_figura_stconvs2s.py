@@ -1,4 +1,6 @@
 from pathlib import Path
+import argparse
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -7,77 +9,117 @@ from radar_station_memmap_dataset import RadarStationMemmapDataset
 from model.stconvs2s import STConvS2S_C
 
 
-DATASET_PATH = "/home/noemi/atmoseer/data/datasets/radar_sumare_2012_2024_15min_256_por_ano"
-CHECKPOINT = "/home/noemi/atmoseer/stconvs2s/checkpoint/radar_sumare_2012_2024_15min_256_por_ano_step5_0_20260622-015122.pth.tar"
+def parse_years(years_arg):
+    if "-" in years_arg:
+        start, end = years_arg.split("-")
+        return list(range(int(start), int(end) + 1))
+    return [int(y.strip()) for y in years_arg.split(",")]
 
-OUT_DIR = Path("/home/noemi/atmoseer/scripts/radar_sumare/figures/")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+def main():
+    parser = argparse.ArgumentParser()
 
-dataset = RadarStationMemmapDataset(
-    radar_root=DATASET_PATH,
-    years=list(range(2012, 2025)),
-    t_in=5,
-    t_out=5,
-    stride=5,
-    split="test",
-)
+    parser.add_argument("--dataset-path", required=True)
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--out-dir", required=True)
 
-# Troque esse índice se quiser outro exemplo
-idx = 100
-x, y, m = dataset[idx]
+    parser.add_argument("--years", default="2012-2024")
+    parser.add_argument("--idx", type=int, default=100)
 
-input_size = (1, 3, 5, 256, 256)
+    parser.add_argument("--t-in", type=int, default=5)
+    parser.add_argument("--t-out", type=int, default=5)
+    parser.add_argument("--stride", type=int, default=5)
 
-model = STConvS2S_C(
-    input_size=input_size,
-    num_layers=3,
-    hidden_dim=32,
-    kernel_size=5,
-    device=device,
-    dropout_rate=0.0,
-    step=5,
-    output_channels=1,
-).to(device)
+    parser.add_argument("--height", type=int, default=256)
+    parser.add_argument("--width", type=int, default=256)
 
-ckpt = torch.load(CHECKPOINT, map_location=device)
-model.load_state_dict(ckpt["state_dict"])
-model.eval()
+    parser.add_argument("--num-layers", type=int, default=3)
+    parser.add_argument("--hidden-dim", type=int, default=32)
+    parser.add_argument("--kernel-size", type=int, default=5)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--step", type=int, default=5)
 
-with torch.no_grad():
-    pred = model(x.unsqueeze(0).to(device))
+    parser.add_argument("--output-name", default="stconvs2s_mapa_previsao.png")
 
-x = x.numpy()
-y = y.numpy()
-m = m.numpy()
-pred = pred.squeeze(0).cpu().numpy()
+    args = parser.parse_args()
 
-# última imagem de entrada
-radar_img = np.transpose(x[:, -1, :, :], (1, 2, 0))
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-fig, axes = plt.subplots(5, 3, figsize=(11, 16))
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    years = parse_years(args.years)
 
-for t in range(5):
-    obs = y[0, t]
-    mask = m[0, t]
-    obs_masked = np.where(mask == 1, obs, np.nan)
-    pred_img = pred[0, t]
+    dataset = RadarStationMemmapDataset(
+        radar_root=args.dataset_path,
+        years=years,
+        t_in=args.t_in,
+        t_out=args.t_out,
+        stride=args.stride,
+        split="test",
+    )
 
-    axes[t, 0].imshow(radar_img)
-    axes[t, 0].set_title("Radar entrada")
-    axes[t, 0].axis("off")
+    x, y, m = dataset[args.idx]
 
-    im1 = axes[t, 1].imshow(obs_masked, vmin=0, vmax=12.5)
-    axes[t, 1].set_title(f"Observado T+{t+1}")
-    axes[t, 1].axis("off")
+    input_size = (1, 3, args.t_in, args.height, args.width)
 
-    im2 = axes[t, 2].imshow(pred_img, vmin=0, vmax=12.5)
-    axes[t, 2].set_title(f"STConvS2S T+{t+1}")
-    axes[t, 2].axis("off")
+    model = STConvS2S_C(
+        input_size=input_size,
+        num_layers=args.num_layers,
+        hidden_dim=args.hidden_dim,
+        kernel_size=args.kernel_size,
+        device=device,
+        dropout_rate=args.dropout,
+        step=args.step,
+        output_channels=1,
+    ).to(device)
 
-fig.colorbar(im2, ax=axes[:, 1:].ravel().tolist(), shrink=0.6, label="mm/15min")
-plt.savefig(OUT_DIR / "stconvs2s_mapa_previsao.png", dpi=300, bbox_inches="tight")
-plt.close()
+    ckpt = torch.load(args.checkpoint, map_location=device)
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
 
-print("Figura salva em:", OUT_DIR / "stconvs2s_mapa_previsao.png")
+    with torch.no_grad():
+        pred = model(x.unsqueeze(0).to(device))
+
+    x = x.cpu().numpy()
+    y = y.cpu().numpy()
+    m = m.cpu().numpy()
+    pred = pred.squeeze(0).cpu().numpy()
+
+    radar_img = np.transpose(x[:, -1, :, :], (1, 2, 0))
+
+    fig, axes = plt.subplots(args.t_out, 3, figsize=(11, 16))
+
+    for t in range(args.t_out):
+        obs = y[0, t]
+        mask = m[0, t]
+        obs_masked = np.where(mask == 1, obs, np.nan)
+        pred_img = pred[0, t]
+
+        axes[t, 0].imshow(radar_img)
+        axes[t, 0].set_title("Radar entrada")
+        axes[t, 0].axis("off")
+
+        axes[t, 1].imshow(obs_masked, vmin=0, vmax=12.5)
+        axes[t, 1].set_title(f"Observado T+{t+1}")
+        axes[t, 1].axis("off")
+
+        im2 = axes[t, 2].imshow(pred_img, vmin=0, vmax=12.5)
+        axes[t, 2].set_title(f"STConvS2S T+{t+1}")
+        axes[t, 2].axis("off")
+
+    fig.colorbar(
+        im2,
+        ax=axes[:, 1:].ravel().tolist(),
+        shrink=0.6,
+        label="mm/15min",
+    )
+
+    output_path = out_dir / args.output_name
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print("Figura salva em:", output_path)
+
+
+if __name__ == "__main__":
+    main()
